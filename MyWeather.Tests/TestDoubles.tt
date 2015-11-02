@@ -1,0 +1,1918 @@
+﻿﻿<#@ template hostspecific="true" language="C#" #>
+<#@ assembly name="EnvDte" #>
+<#@ assembly name="EnvDTE80" #>
+<#@ assembly name="System.Core" #>
+<#@ import namespace="System" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="System.Text" #>
+<#@ import namespace="System.Text.RegularExpressions" #>
+<#@ include file="MultiOutput.ttinclude" #>  
+<#
+	var currentProject = __getTemplateProject();
+	Utility.Initialize(this.Host as IServiceProvider);
+	DeleteOldOutputs();  
+
+	var projects = Utility.GetAllProjects();
+	foreach(var project in projects)
+	{
+		var interfaces = Utility.GetInterfacesOf(project);
+		foreach(var i in interfaces)
+		{
+			if (i.Name == "IMemberInvocationHandler") continue;
+			if (i.Access == EnvDTE.vsCMAccess.vsCMAccessPublic)
+			{
+				var doubleDescription = new TestDoubleDescription(i);
+#><#=TestDoubleMaker.CreateSpy(doubleDescription, currentProject.Name)#><#
+				SaveOutput(doubleDescription.FileName); 
+#><#=TestDoubleMaker.CreateStub(doubleDescription, currentProject.Name)#><#
+				SaveOutput(doubleDescription.FileName); 
+#><#=TestDoubleMaker.CreateMock(doubleDescription, currentProject.Name)#><#
+				SaveOutput(doubleDescription.FileName); 
+			}
+		}
+	}
+
+	
+#>
+namespace <#= currentProject.Name #>
+{
+	using Microsoft.VisualStudio.TestPlatform.UnitTestFramework;
+    using System;
+    using System.Collections.Generic;
+    using System.Diagnostics;
+    using System.Linq;
+    using System.Reflection;
+    using System.Threading.Tasks;
+
+    public abstract class Mock<T> : Stub<T> where T : class
+    {
+        private readonly List<MemberInvocation> memberInvocationVerifiers;
+
+        protected Mock() : base()
+        {
+            this.memberInvocationVerifiers = new List<MemberInvocation>();
+        }
+
+        public void VerifyAll()
+        {
+            if (this.memberInvocationVerifiers.Count <= 0) Assert.Fail("There is not any verification to check");
+
+            foreach (var memberInvocation in this.memberInvocationVerifiers)
+            {
+                this.Verify(memberInvocation);
+            }
+        }
+
+        internal void Verify(string methodName, params object[] args)
+        {
+            this.Verify(new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true });
+        }
+
+        internal void VerifyGet(string propertyName)
+        {
+            this.Verify(new MemberInvocation { Name = FormatPropertyGetName(propertyName), Parameters = new object[0], IsGetter = true });
+        }
+
+        internal void VerifySet(string propertyName, object arg)
+        {
+            this.Verify(new MemberInvocation { Name = FormatPropertySetName(propertyName), Parameters = new object[] { arg }, IsSetter = true });
+        }
+
+        internal void AddVerification(string methodName, params object[] args)
+        {
+            this.AddVerification(new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true });
+        }
+
+        internal void AddGetVerification(string propertyName)
+        {
+            this.AddVerification(new MemberInvocation { Name = FormatPropertyGetName(propertyName), Parameters = new object[0], IsGetter = true });
+        }
+
+        internal void AddSetVerification(string propertyName, object arg)
+        {
+            this.AddVerification(new MemberInvocation { Name = FormatPropertySetName(propertyName), Parameters = new object[] { arg }, IsSetter = true });
+        }
+
+        protected override void OnReset()
+        {
+            base.OnReset();
+            this.memberInvocationVerifiers.Clear();
+        }
+
+        private void AddVerification(MemberInvocation memberInvocation)
+        {
+            this.memberInvocationVerifiers.Add(memberInvocation);
+        }
+
+        private void Verify(MemberInvocation memberInvocation)
+        {
+            var verified = false;
+            var candidateVerifiers = this.MemberInvocations.Where(v => v.Name == memberInvocation.Name && v.Parameters.Length == memberInvocation.Parameters.Length);
+            foreach (var candidate in candidateVerifiers)
+            {
+                var allPropertiesAreEqual = true;
+                for (var i = 0; i < candidate.Parameters.Length; i++)
+                {
+                    if (candidate.Parameters[i] != memberInvocation.Parameters[i])
+                    {
+                        allPropertiesAreEqual = false;
+                        break;
+                    }
+                }
+
+                if (allPropertiesAreEqual)
+                {
+                    verified = true;
+                    break;
+                }
+            }
+
+            Assert.IsTrue(verified, "Verifying '" + memberInvocation.Name + "' invocation");
+        }
+    }
+
+    public abstract class Stub<T> : Spy<T> where T : class
+    {
+        private readonly List<IMemberInvocationHandler> memberInvocationHandlers;
+
+        protected Stub() : base()
+        {
+            this.memberInvocationHandlers = new List<IMemberInvocationHandler>();
+        }
+
+        internal void Handle(string methodName, Action action)
+        {
+            Action<object[]> callback = args => { action(); };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback));
+        }
+
+        internal void Handle<T1>(string methodName, Action<T1> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                action(arg1);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1)));
+        }
+
+        internal void Handle<T1, T2>(string methodName, Action<T1, T2> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                action(arg1, arg2);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2)));
+        }
+
+        internal void Handle<T1, T2, T3>(string methodName, Action<T1, T2, T3> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                action(arg1, arg2, arg3);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3)));
+        }
+
+        internal void Handle<T1, T2, T3, T4>(string methodName, Action<T1, T2, T3, T4> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                action(arg1, arg2, arg3, arg4);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5>(string methodName, Action<T1, T2, T3, T4, T5> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                action(arg1, arg2, arg3, arg4, arg5);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6>(string methodName, Action<T1, T2, T3, T4, T5, T6> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                action(arg1, arg2, arg3, arg4, arg5, arg6);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7>(string methodName, Action<T1, T2, T3, T4, T5, T6, T7> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                action(arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, T8>(string methodName, Action<T1, T2, T3, T4, T5, T6, T7, T8> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                var arg8 = (T8)args[7];
+                action(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7), typeof(T8)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string methodName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                var arg8 = (T8)args[7];
+                var arg9 = (T9)args[8];
+                action(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7), typeof(T8), typeof(T9)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string methodName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> action)
+        {
+            Action<object[]> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                var arg8 = (T8)args[7];
+                var arg9 = (T9)args[8];
+                var arg10 = (T10)args[9];
+                action(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7), typeof(T8), typeof(T9), typeof(T10)));
+        }
+
+        internal void Handle<TResult>(string methodName, Func<TResult> action)
+        {
+            Func<object[], TResult> callback = args => action();
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback));
+        }
+
+        internal void Handle<T1, TResult>(string methodName, Func<T1, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                return action(arg1);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1)));
+        }
+
+        internal void Handle<T1, T2, TResult>(string methodName, Func<T1, T2, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                return action(arg1, arg2);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2)));
+        }
+
+        internal void Handle<T1, T2, T3, TResult>(string methodName, Func<T1, T2, T3, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                return action(arg1, arg2, arg3);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, TResult>(string methodName, Func<T1, T2, T3, T4, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                return action(arg1, arg2, arg3, arg4);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, TResult>(string methodName, Func<T1, T2, T3, T4, T5, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                return action(arg1, arg2, arg3, arg4, arg5);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, TResult>(string methodName, Func<T1, T2, T3, T4, T5, T6, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                return action(arg1, arg2, arg3, arg4, arg5, arg6);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, TResult>(string methodName, Func<T1, T2, T3, T4, T5, T6, T7, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                return action(arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, T8, TResult>(string methodName, Func<T1, T2, T3, T4, T5, T6, T7, T8, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                var arg8 = (T8)args[7];
+                return action(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7), typeof(T8)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult>(string methodName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                var arg8 = (T8)args[7];
+                var arg9 = (T9)args[8];
+                return action(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7), typeof(T8), typeof(T9)));
+        }
+
+        internal void Handle<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult>(string methodName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult> action)
+        {
+            Func<object[], TResult> callback = args =>
+            {
+                var arg1 = (T1)args[0];
+                var arg2 = (T2)args[1];
+                var arg3 = (T3)args[2];
+                var arg4 = (T4)args[3];
+                var arg5 = (T5)args[4];
+                var arg6 = (T6)args[5];
+                var arg7 = (T7)args[6];
+                var arg8 = (T8)args[7];
+                var arg9 = (T9)args[8];
+                var arg10 = (T10)args[9];
+                return action(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+            };
+            this.memberInvocationHandlers.Add(new MemberInvocationHandler<TResult>(methodName, callback, typeof(T1), typeof(T2), typeof(T3), typeof(T4), typeof(T5), typeof(T6), typeof(T7), typeof(T8), typeof(T9), typeof(T10)));
+        }
+
+        internal void HandleGet<TResult>(string propertyName, Func<TResult> action)
+        {
+            var methodName = FormatPropertyGetName(propertyName);
+            this.Handle<TResult>(methodName, action);
+        }
+
+        internal void HandleSet<TResult>(string propertyName, Action<TResult> action)
+        {
+            var methodName = FormatPropertySetName(propertyName);
+            this.Handle<TResult>(methodName, action);
+        }
+
+        protected override bool OnInvokeMember<TResult>(MemberInvocation invocation, out TResult result)
+        {
+            var baseResult = base.OnInvokeMember<TResult>(invocation, out result);
+            var candidateHandlers = this.memberInvocationHandlers.Where(h => h.MethodName == invocation.Name && h.ParametersTypes.Length == invocation.Parameters.Length).Reverse();
+            if (candidateHandlers.Any())
+            {
+                foreach (var candidate in candidateHandlers)
+                {
+                    var isOk = true;
+                    for (var i = 0; i < invocation.Parameters.Length; i++)
+                    {
+                        if (!candidate.ParametersTypes[i].IsAssignableFrom(invocation.Parameters[i].GetType()))
+                        {
+                            isOk = false;
+                            break;
+                        }
+                    }
+
+                    if (isOk)
+                    {
+                        candidate.Execute(invocation.Parameters);
+                        result = (TResult)candidate.Result;
+                        return true;
+                    }
+                }
+            }
+
+            return baseResult;
+        }
+
+        protected override bool OnInvokeMember<TResult>(MemberInvocation invocation, out Task<TResult> result)
+        {
+            var isOk = this.OnInvokeMember<Task<TResult>>(invocation, out result);
+            if (result == null)
+            {
+                result = Task.FromResult(default(TResult));
+            }
+
+            return isOk;
+        }
+
+        protected override void OnReset()
+        {
+            base.OnReset();
+            this.memberInvocationHandlers.Clear();
+        }
+    }
+
+    public abstract class Spy<T> where T : class
+    {
+        private readonly List<MemberInvocation> memberInvocations;
+
+        protected List<MemberInvocation> MemberInvocations { get { return this.memberInvocations; } }
+
+        protected Spy()
+        {
+            if (!typeof(T).GetTypeInfo().IsInterface)
+                throw new ArgumentException(string.Format("{0} must be an Interface", typeof(T).Name));
+
+            this.memberInvocations = new List<MemberInvocation>();
+        }
+
+        internal void Called(string methodName)
+        {
+            Assert.IsTrue(this.memberInvocations.Any(m => m.Name == methodName), "Checking '" + methodName + "' has been called");
+        }
+
+        internal void Called(int counter, string methodName)
+        {
+            Assert.AreEqual(counter, this.memberInvocations.Count(m => m.Name == methodName), "Checking '" + methodName + "' has been called " + counter + " times");
+        }
+
+		internal void CalledGet(string propertyName)
+        {
+			var methodName = FormatPropertyGetName(propertyName);
+            this.Called(methodName);
+        }
+
+		internal void CalledGet(int counter, string propertyName)
+        {
+			var methodName = FormatPropertyGetName(propertyName);
+            this.Called(counter, methodName);
+        }
+
+		internal void CalledSet(string propertyName)
+        {
+			var methodName = FormatPropertySetName(propertyName);
+            this.Called(methodName);
+        }
+
+		internal void CalledSet(int counter, string propertyName)
+        {
+			var methodName = FormatPropertySetName(propertyName);
+            this.Called(counter, methodName);
+        }
+
+		internal void CalledSetWith(string propertyName, object value)
+        {
+			var methodName = FormatPropertySetName(propertyName);
+            this.CalledWith(methodName, value);
+        }
+
+		internal void CalledSetWith(int counter, string propertyName, object value)
+        {
+			var methodName = FormatPropertySetName(propertyName);
+            this.CalledWith(counter, methodName, value);
+        }
+
+        internal void CalledWith(string methodName, params object[] args)
+        {
+            var memberInvocation = new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true };
+            Assert.IsTrue(this.memberInvocations.Any(m => memberInvocation.Equals(m)), "Checking '" + methodName + "' has been called with parameters");
+        }
+
+        internal void CalledWith(int counter, string methodName, params object[] args)
+        {
+            var memberInvocation = new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true };
+            Assert.AreEqual(counter, this.memberInvocations.Count(m => memberInvocation.Equals(m)), "Checking '" + methodName + "' has been called " + counter + " times with parameters");
+        }
+
+        internal MemberInvocation GetCall(int counter, string methodName)
+        {
+            return this.memberInvocations.Where(m => methodName == m.Name).Skip(counter).FirstOrDefault();
+        }
+
+        public void Reset()
+        {
+            this.OnReset();
+        }
+
+        protected virtual bool OnInvokeMember<TResult>(MemberInvocation invocation, out TResult result)
+        {
+            result = default(TResult);
+            return true;
+        }
+
+        protected virtual bool OnInvokeMember<TResult>(MemberInvocation invocation, out Task<TResult> result)
+        {
+            result = Task.FromResult(default(TResult));
+            return true;
+        }
+
+        protected virtual void OnReset()
+        {
+            memberInvocations.Clear();
+        }
+
+        protected void InvokeMember(string methodName, object[] args)
+        {
+            if (this.TryInvokeMember(methodName, args))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException();
+        }
+
+        protected void InvokeMember<TResult>(string methodName, object[] args, out TResult result)
+        {
+            if (this.TryInvokeMember(methodName, args, out result))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException();
+        }
+
+        protected void InvokeMember<TResult>(string methodName, object[] args, out Task<TResult> result)
+        {
+            if (this.TryInvokeMember(methodName, args, out result))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException();
+        }
+
+        protected void InvokeGetProperty<TResult>(string propertyName, out TResult result)
+        {
+            if (this.TryInvokeGetProperty(propertyName, out result))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException();
+        }
+
+        protected void InvokeSetProperty(string propertyName, object arg)
+        {
+            if (this.TryInvokeSetProperty(propertyName, arg))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException();
+        }
+
+        private bool TryInvokeMember(string methodName, object[] args)
+        {
+            var memberInvocation = new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true };
+            bool result;
+            return this.TryInvokeMember<bool>(memberInvocation, out result);
+        }
+
+        private bool TryInvokeMember<TResult>(string methodName, object[] args, out TResult result)
+        {
+            var memberInvocation = new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true };
+            return this.TryInvokeMember(memberInvocation, out result);
+        }
+
+        private bool TryInvokeMember<TResult>(string methodName, object[] args, out Task<TResult> result)
+        {
+            var memberInvocation = new MemberInvocation { Name = methodName, Parameters = args, IsMethod = true };
+            return this.TryInvokeMember(memberInvocation, out result);
+        }
+
+        private bool TryInvokeGetProperty<TResult>(string propertyName, out TResult result)
+        {
+            var memberInvocation = new MemberInvocation { Name = FormatPropertyGetName(propertyName), Parameters = new object[0], IsGetter = true };
+            return this.TryInvokeMember(memberInvocation, out result);
+        }
+
+        private bool TryInvokeSetProperty(string propertyName, object arg)
+        {
+            var memberInvocation = new MemberInvocation { Name = FormatPropertySetName(propertyName), Parameters = new object[] { arg }, IsSetter = true };
+            bool result;
+            return this.TryInvokeMember(memberInvocation, out result);
+        }
+
+        private bool TryInvokeMember<TResult>(MemberInvocation memberInvocation, out TResult result)
+        {
+            var done = false;
+            result = default(TResult);
+            try
+            {
+                done = this.OnInvokeMember(memberInvocation, out result);
+                if (done)
+                {
+                    this.memberInvocations.Add(memberInvocation);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(string.Format("Error invoking '{0}': {1}", memberInvocation.ToString(), ex.Message));
+            }
+
+            return done;
+        }
+
+        private bool TryInvokeMember<TResult>(MemberInvocation memberInvocation, out Task<TResult> result)
+        {
+            var done = false;
+            result = default(Task<TResult>);
+            try
+            {
+                done = this.OnInvokeMember(memberInvocation, out result);
+                if (done)
+                {
+                    this.memberInvocations.Add(memberInvocation);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(string.Format("Error invoking '{0}': {1}", memberInvocation.ToString(), ex.Message));
+            }
+
+            return done;
+        }
+
+        protected static string FormatPropertyGetName(string propertyName)
+        {
+            return string.Format("$Get_{0}", propertyName);
+        }
+
+        protected static string FormatPropertySetName(string propertyName)
+        {
+            return string.Format("$Set_{0}", propertyName);
+        }
+    }
+
+    public class MemberInvocation : IEquatable<MemberInvocation>
+    {
+        private const string UnknownTypeName = "[Unknown]";
+        private const string MethodTypeName = "[Method]";
+        private const string PropertyGetTypeName = "[PropertyGet]";
+        private const string PropertySetTypeName = "[PropertySet]";
+        public string Name { get; set; }
+
+        public object[] Parameters { get; set; }
+
+        public bool IsMethod { get; set; }
+
+        public bool IsGetter { get; set; }
+
+        public bool IsSetter { get; set; }
+
+        public override string ToString()
+        {
+            var type = UnknownTypeName;
+            if (IsMethod) type = MethodTypeName;
+            if (IsGetter) type = PropertyGetTypeName;
+            if (IsSetter) type = PropertySetTypeName;
+
+            return string.Format("{0}.{1}", type, Name);
+        }
+
+        public bool Equals(MemberInvocation other)
+        {
+            if (other.Name != this.Name) return false;
+            if (other.Parameters == null && this.Parameters == null) return true;
+            if (other.Parameters == null || this.Parameters == null) return false;
+            if (other.Parameters.Length != this.Parameters.Length) return false;
+
+            for (var i = 0; i < this.Parameters.Length; i++)
+            {
+                if (other.Parameters[i] != this.Parameters[i]) return false;
+            }
+
+            return true;
+        }
+
+        public override bool Equals(object obj)
+        {
+            var b = obj as MemberInvocation;
+            if (b != null)
+            {
+                return this.Equals(b);
+            }
+
+            return false;
+        }
+
+        public override int GetHashCode()
+        {
+            return base.GetHashCode();
+        }
+    }
+
+    public interface IMemberInvocationHandler
+    {
+        string MethodName { get; }
+        Type[] ParametersTypes { get; }
+
+        object Result { get; }
+
+        void Execute(object[] args);
+    }
+
+    public class MemberInvocationHandler : IMemberInvocationHandler
+    {
+        private readonly Action<object[]> callback;
+
+        public string MethodName { get; private set; }
+
+        public Type[] ParametersTypes { get; private set; }
+
+        public object Result { get { return true; } }
+
+        public MemberInvocationHandler(string methodName, Action<object[]> callback, params Type[] parametersTypes)
+        {
+            this.MethodName = methodName;
+            this.ParametersTypes = parametersTypes ?? new Type[0];
+            this.callback = callback;
+        }
+
+        public void Execute(object[] args)
+        {
+            this.callback(args);
+        }
+    }
+
+    public class MemberInvocationHandler<TResult> : IMemberInvocationHandler
+    {
+        private readonly Func<object[], TResult> callback;
+
+        public string MethodName { get; private set; }
+
+        public Type[] ParametersTypes { get; private set; }
+
+        public object Result { get; private set; }
+
+        public MemberInvocationHandler(string methodName, Func<object[], TResult> callback, params Type[] parametersTypes)
+        {
+            this.MethodName = methodName;
+            this.ParametersTypes = parametersTypes ?? new Type[0];
+            this.callback = callback;
+        }
+
+        public void Execute(object[] args)
+        {
+            this.Result = this.callback(args);
+        }
+    }
+}
+
+<#+
+	public class Utility
+	{
+		private static IServiceProvider Host;
+
+		public static void Initialize(IServiceProvider host)
+		{
+			Host = host;
+		}
+
+		public static EnvDTE.Project GetProject(string projectName)
+		{
+			return GetAllProjects()
+					   .Where(p => p.Name == projectName)
+					   .First();
+		}
+
+		public static IEnumerable<EnvDTE.Project> GetAllProjects()
+		{
+			var ret = new List<EnvDTE.Project>();
+			var visualStudio = Host.GetService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
+			var topLevelProjects = visualStudio.Solution.Projects;
+			foreach(EnvDTE.Project project in topLevelProjects)
+			{
+				if (project.Kind == "{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") //Solution folder
+					ret.AddRange(GetProjectsFromItemsCollection(project.ProjectItems));
+				else
+					ret.Add(project);
+			}
+
+			return ret;
+		}
+
+		public static List<EnvDTE.CodeClass> GetClassesOf(EnvDTE.Project project)
+		{
+			return GetItemsOfType<EnvDTE.CodeClass>(project);
+		}
+
+		public static List<EnvDTE.CodeInterface> GetInterfacesOf(EnvDTE.Project project)
+		{
+			return GetItemsOfType<EnvDTE.CodeInterface>(project);
+		}
+
+		private static List<T> GetItemsOfType<T>(EnvDTE.Project project) where T : class
+		{
+			var items = GetProjectItemsRecursively(project.ProjectItems);
+			var ret = new List<T>();
+			foreach(var item in items)
+			{
+				if(item.FileCodeModel != null)
+				{
+					foreach (EnvDTE.CodeElement element in item.FileCodeModel.CodeElements)
+					{
+						if (element is EnvDTE.CodeNamespace)
+						{
+							EnvDTE.CodeNamespace ns = (EnvDTE.CodeNamespace)element;
+					
+							foreach (EnvDTE.CodeElement elem in ns.Members)
+							{
+								if (elem is T)
+								{
+									ret.Add(elem as T);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			return ret;
+		}
+
+		public static List<EnvDTE.CodeProperty> FindProperties(EnvDTE.CodeInterface @interface)
+		{
+			try
+			{
+				var properties = FindProperties(@interface.Children);
+				var bases = FindInElements<EnvDTE.CodeInterface>(@interface.Bases);
+				foreach(var b in bases)
+				{
+					properties.AddRange(FindProperties(b));
+				}
+
+				return properties.OrderBy(p => p.Name).ToList();
+			}
+			catch
+			{
+				return new List<EnvDTE.CodeProperty>();
+			}
+		}
+
+		public static List<EnvDTE.CodeFunction> FindFunctions(EnvDTE.CodeInterface @interface)
+		{
+			try
+			{
+				var functions = FindFunctions(@interface.Children);
+				var bases = FindInElements<EnvDTE.CodeInterface>(@interface.Bases);
+				foreach(var b in bases)
+				{
+					functions.AddRange(FindFunctions(b));
+				}
+
+				return functions.OrderBy(p => p.Name).ToList();
+			}
+			catch
+			{
+				return new List<EnvDTE.CodeFunction>();
+			}
+		}
+
+		public static List<EnvDTE80.CodeEvent> FindEvents(EnvDTE.CodeInterface @interface)
+		{
+			try
+			{
+				var e2 = @interface as EnvDTE80.CodeInterface2;
+				var events = FindEvents(e2.Children);
+				var bases = FindInElements<EnvDTE.CodeInterface>(@interface.Bases);
+				foreach(var b in bases)
+				{
+					events.AddRange(FindEvents(b));
+				}
+
+				return events.OrderBy(p => p.Name).ToList();
+			}
+			catch
+			{
+				return new List<EnvDTE80.CodeEvent>();
+			}
+		}
+
+		public static List<EnvDTE.CodeProperty> FindProperties(EnvDTE.CodeElements elements)
+		{
+			return FindInElements<EnvDTE.CodeProperty>(elements);
+		}
+
+		public static List<EnvDTE.CodeFunction> FindFunctions(EnvDTE.CodeElements elements)
+		{
+			return FindInElements<EnvDTE.CodeFunction>(elements);
+		}
+
+		public static List<EnvDTE.CodeParameter> FindParameters(EnvDTE.CodeElements elements)
+		{
+			return FindInElements<EnvDTE.CodeParameter>(elements);
+		}
+
+		public static List<EnvDTE80.CodeEvent> FindEvents(EnvDTE.CodeElements elements)
+		{
+			return FindInElements<EnvDTE80.CodeEvent>(elements);
+		}
+
+		private static List<EnvDTE.Project> GetProjectsFromItemsCollection(EnvDTE.ProjectItems items)
+		{
+			var ret = new List<EnvDTE.Project>();
+
+			foreach(EnvDTE.ProjectItem item in items)
+			{
+				if (item.SubProject == null)
+					continue;
+				else if (item.SubProject.Kind == "{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") //Solution folder
+					ret.AddRange(GetProjectsFromItemsCollection(item.SubProject.ProjectItems));
+				else 
+					ret.Add(item.SubProject);
+			}
+
+			return ret;
+		}
+
+		private static List<EnvDTE.ProjectItem> GetProjectItemsRecursively(EnvDTE.ProjectItems items)
+		{
+			var ret = new List<EnvDTE.ProjectItem>();
+		
+			if (items == null) return ret;
+		
+			foreach(EnvDTE.ProjectItem item in items)
+			{
+				ret.Add(item);
+				ret.AddRange(GetProjectItemsRecursively(item.ProjectItems));
+			}
+		
+			return ret;
+		}
+
+		private static List<T> FindInElements<T>(EnvDTE.CodeElements elements) where T : class
+		{
+			var ret = new List<T>();
+        
+			foreach (var element in elements)
+			{
+				var p = element as T;
+				if (p != null)
+					ret.Add(p);            
+			}
+    
+			return ret;
+		}
+	}
+
+	public class TestDoubleDescription
+	{
+		private readonly EnvDTE.CodeInterface @interface;
+
+		public string Namespace { get; private set; }
+		public string Name { get; private set; }
+		public string ConstructorName { get; private set; }
+		public string BaseName { get; private set; }
+		public string FileName { get; private set; }
+		public List<TestDoublePropertyDescription> Properties { get; private set; }
+		public List<TestDoubleMethodDescription> Methods { get; private set; }
+		public List<TestDoubleMethodDescription> Events { get; private set; }
+
+		public TestDoubleDescription(EnvDTE.CodeInterface @interface)
+		{
+			var name = @interface.Name + "Spy";
+			if (name.StartsWith("I")) name = name.Substring(1);
+		
+			var filename = name + ".cs";
+			var basename = @interface.Name;
+			var isGeneric = @interface.FullName.Contains("<");
+			if (isGeneric)
+			{
+				var argument = @interface.FullName.Split('<', '>')[1];
+				name = name + "<" + argument + ">";
+				basename = basename + "<" + argument + ">";
+			}
+
+			this.@interface = @interface;
+			this.SetPostfix("");
+			this.Properties = Utility.FindProperties(@interface).Select(p => new TestDoublePropertyDescription(p)).ToList();
+			this.Methods = Utility.FindFunctions(@interface).Select(f => new TestDoubleMethodDescription(f)).ToList();
+			this.Events = Utility.FindEvents(@interface).Select(f => new TestDoubleMethodDescription(f)).ToList();
+		}
+
+		public List<string> GetReferences(params string[] otherReferences)
+		{
+			var references = new List<string>();
+			foreach(var reference in otherReferences)
+			{
+				if (!references.Contains(reference) && !Namespace.Contains(reference)) references.Add(reference);
+			}
+			foreach(var reference in this.Properties.SelectMany(p => p.References))
+			{
+				if (!references.Contains(reference) && !Namespace.Contains(reference)) references.Add(reference);
+			}
+			foreach(var reference in this.Methods.SelectMany(p => p.AllReferences))
+			{
+				if (!references.Contains(reference) && !Namespace.Contains(reference)) references.Add(reference);
+			}
+			foreach(var reference in this.Events.SelectMany(p => p.AllReferences))
+			{
+				if (!references.Contains(reference) && !Namespace.Contains(reference)) references.Add(reference);
+			}
+
+			return references;
+		}
+
+		public void SetPostfix(string value)
+		{ 
+			var name = this.@interface.Name + value;
+			if (name.StartsWith("I")) name = name.Substring(1);
+		
+			var filename = name + ".cs";
+			var constructor = name;
+			var basename = this.@interface.Name;
+			var isGeneric = this.@interface.FullName.Contains("<");
+			if (isGeneric)
+			{
+				var argument = this.@interface.FullName.Split('<', '>')[1];
+				name = name + "<" + argument + ">";
+				basename = basename + "<" + argument + ">";
+			}
+
+			this.Namespace =  @interface.Namespace.Name;
+			this.Name = name;
+			this.ConstructorName = constructor;
+			this.BaseName = basename;
+			this.FileName = filename;
+		}
+	}
+
+	public abstract class TestDoubleObjectDescription
+	{
+		public string TypeName { get; private set; }
+		public string Name { get; private set; }
+		public List<string> References { get; private set; }
+
+		protected TestDoubleObjectDescription(string typename, string name)
+		{
+			string[] referencesType;
+			typename = GetName(typename, out referencesType);
+			name =  GetName(name);
+		
+			this.TypeName = typename;
+			this.Name = name;
+			this.References = new List<string>();
+			this.References.AddRange(referencesType);
+		}
+
+		protected static string GetName(string fullname)
+        {
+			var parts = fullname.Split(new[] { "." }, StringSplitOptions.RemoveEmptyEntries);
+			return parts[parts.Length - 1];
+		}
+
+		protected static string GetName(string fullname, out string[] namespaces)
+        {
+            namespaces = new string[0];
+
+            if (!fullname.Contains(".")) return fullname;
+
+            if (!fullname.Contains("<"))
+            {
+                var match = Regex.Match(fullname, @"([.\w]+\.?)\.(\w+\[?\]?)");
+                if (match.Success)
+                {
+                    namespaces = new string[] { match.Groups[1].Value };
+                    return match.Groups[2].Value;
+                }
+
+                return fullname;
+            }
+
+            var isArray = fullname.EndsWith("[]");
+            var index1 = fullname.IndexOf("<");
+            var index2 = fullname.LastIndexOf(">");
+
+            var nsRet = new List<string>();
+            string[] aux;
+            var ret = GetName(fullname.Substring(0, index1), out aux);
+            nsRet.AddRange(aux);
+
+            var generic = fullname.Substring(index1 + 1, index2 - index1 - 1);
+            if (generic.Contains(","))
+            {
+                var generics = SplitGenericTypes(generic);
+                generic = "";
+                foreach (var g in generics)
+                {
+                    if (generic != "") generic += ", ";
+                    generic += GetName(g.Trim(), out aux);
+                    nsRet.AddRange(aux);
+                }
+            }
+            else
+            {
+                generic = GetName(generic, out aux);
+                nsRet.AddRange(aux);
+            }
+
+            namespaces = nsRet.ToArray();
+            return ret + "<" + generic + ">" + (isArray ? "[]" : "");
+        }
+
+        private static IEnumerable<string> SplitGenericTypes(string input)
+        {
+            var result = "";
+            var groupsCount = 0;
+            foreach (var c in input)
+            {
+                if (c == ',' && groupsCount == 0) { yield return result.Trim(); result = ""; continue; }
+                if (c == '<') groupsCount++;
+                if (c == '>') groupsCount--;
+
+                result += c;
+            }
+
+            yield return result.Trim();
+        }
+	}
+
+	public class TestDoublePropertyDescription : TestDoubleObjectDescription
+	{
+		private readonly EnvDTE.CodeProperty property;
+
+		public bool HasGetter { get; private set; }
+		public bool HasSetter { get; private set; }
+
+		public TestDoublePropertyDescription(EnvDTE.CodeProperty property) : base(property.Type.AsString, property.FullName)
+		{
+			this.property = property;
+
+			this.HasGetter = property.Getter != null;
+			this.HasSetter = property.Setter != null;
+
+			if (!this.HasGetter && !this.HasSetter) // autoproperty
+			{
+				this.HasGetter = true;
+				this.HasSetter = true;
+			}
+		}
+	}
+
+	public class TestDoubleMethodDescription : TestDoubleObjectDescription
+	{
+		private readonly EnvDTE.CodeFunction function;
+		private readonly EnvDTE80.CodeEvent @event;
+
+		public List<TestDoubleMethodParameterDescription> Parameters { get; private set; }
+
+		public string ArgumentsString
+		{
+			get
+			{
+				var arguments = "";
+				foreach(var parameter in this.Parameters)
+				{
+					if (arguments != "") arguments += ", ";
+					arguments += parameter.TypeName + " " + parameter.Name;
+				}
+
+				return arguments;
+			}
+		}
+
+		public string ArgumentsListString
+		{
+			get
+			{
+				var arguments = "";
+				foreach(var parameter in this.Parameters)
+				{
+					if (arguments != "") arguments += ", ";
+					arguments += parameter.Name;
+				}
+
+				return arguments;
+			}
+		}
+
+		public string ArgumentsTypeListString
+		{
+			get
+			{
+				var arguments = "";
+				foreach(var parameter in this.Parameters)
+				{
+					if (arguments != "") arguments += ", ";
+					arguments += parameter.TypeName;
+				}
+
+				return arguments;
+			}
+		}
+
+		public List<string> AllReferences 
+		{
+			get
+			{
+				var references = this.References;
+				references.AddRange(this.Parameters.SelectMany(p => p.References));
+				return references;
+			}
+		}
+
+		public TestDoubleMethodDescription(EnvDTE.CodeFunction function) : base(function.Type.AsString, function.FullName)
+		{
+			this.function = function;
+			this.Parameters =  Utility.FindParameters(function.Children).Select(p => new TestDoubleMethodParameterDescription(p)).ToList();
+		}
+
+		public TestDoubleMethodDescription(EnvDTE80.CodeEvent @event) : base(@event.Type.AsString, @event.FullName)
+		{
+			this.@event = @event;
+			this.Parameters =  Utility.FindParameters(@event.Children).Select(p => new TestDoubleMethodParameterDescription(p)).ToList();
+		}
+	}
+
+	public class TestDoubleMethodParameterDescription : TestDoubleObjectDescription
+	{
+		private readonly EnvDTE.CodeParameter parameter;
+
+		public TestDoubleMethodParameterDescription(EnvDTE.CodeParameter parameter) : base(parameter.Type.AsString, parameter.FullName)
+		{
+			this.parameter = parameter;
+		}
+	}
+
+	
+	public class TestDoubleMaker
+	{
+		public static string CreateSpy(TestDoubleDescription doubleDescription, string currentProjectName)
+		{
+			doubleDescription.SetPostfix("Spy");
+			var sb = new StringBuilder();
+			sb.AppendLine("namespace " + doubleDescription.Namespace);
+			sb.AppendLine("{");
+			foreach(var reference in doubleDescription.GetReferences(currentProjectName, "System.Collections.Generic").OrderBy(s => s))
+			{
+				sb.AppendLine("	using " + reference + ";");
+			}
+			sb.AppendLine("");
+			sb.AppendLine("	public class " + doubleDescription.Name + " : Spy<" + doubleDescription.BaseName + ">, " + doubleDescription.BaseName);
+			sb.AppendLine("	{");
+			sb.AppendLine("		private readonly CountCallers countCallers;");
+			sb.AppendLine("		private readonly CountCalls countCalls;");
+			sb.AppendLine("");
+			sb.AppendLine("		public " + doubleDescription.ConstructorName + "()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			this.countCallers = new CountCallers(this);");
+			sb.AppendLine("			this.countCalls = new CountCalls(this);");
+			sb.AppendLine("		}");
+			sb.AppendLine("");
+			sb.Append(CreateProperties(doubleDescription.Properties));
+			sb.Append(CreateEvents(doubleDescription.Events));
+			sb.Append(CreateMethods(doubleDescription.Methods));
+			sb.AppendLine("		public CountCallers HasBeenCalled()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.countCallers;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public CountCalls GetCalls()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.countCalls;");
+			sb.AppendLine("		}");
+			sb.Append(CreateCountCallers(doubleDescription));
+			sb.Append(CreateCountCalls(doubleDescription));
+			sb.AppendLine("	}");
+			sb.AppendLine("}");
+
+			return sb.ToString();
+		}
+
+		public static string CreateStub(TestDoubleDescription doubleDescription, string currentProjectName)
+		{
+			doubleDescription.SetPostfix("Stub");
+			var sb = new StringBuilder();
+			sb.AppendLine("namespace " + doubleDescription.Namespace);
+			sb.AppendLine("{");
+			foreach(var reference in doubleDescription.GetReferences(currentProjectName, "System", "System.Collections.Generic").OrderBy(s => s))
+			{
+				sb.AppendLine("	using " + reference + ";");
+			}
+			sb.AppendLine("");
+			sb.AppendLine("	public class " + doubleDescription.Name + " : Stub<" + doubleDescription.BaseName + ">, " + doubleDescription.BaseName);
+			sb.AppendLine("	{");
+			sb.AppendLine("		private readonly CountCallers countCallers;");
+			sb.AppendLine("		private readonly CountCalls countCalls;");
+			sb.AppendLine("		private readonly Handlers handlers;");
+			sb.AppendLine("");
+			sb.AppendLine("		public " + doubleDescription.ConstructorName + "()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			this.countCallers = new CountCallers(this);");
+			sb.AppendLine("			this.countCalls = new CountCalls(this);");
+			sb.AppendLine("			this.handlers = new Handlers(this);");
+			sb.AppendLine("		}");
+			sb.AppendLine("");
+			sb.Append(CreateProperties(doubleDescription.Properties));
+			sb.Append(CreateEvents(doubleDescription.Events));
+			sb.Append(CreateMethods(doubleDescription.Methods));
+			sb.AppendLine("		public CountCallers HasBeenCalled()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.countCallers;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public CountCalls GetCalls()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.countCalls;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public Handlers AddHandlers()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.handlers;");
+			sb.AppendLine("		}");
+			sb.Append(CreateCountCallers(doubleDescription));
+			sb.Append(CreateCountCalls(doubleDescription));
+			sb.Append(CreateHandlers(doubleDescription));
+			sb.AppendLine("	}");
+			sb.AppendLine("}");
+			
+			return sb.ToString();
+		}
+
+		public static string CreateMock(TestDoubleDescription doubleDescription, string currentProjectName)
+		{
+			doubleDescription.SetPostfix("Mock");
+			var sb = new StringBuilder();
+			sb.AppendLine("namespace " + doubleDescription.Namespace);
+			sb.AppendLine("{");
+			foreach(var reference in doubleDescription.GetReferences(currentProjectName, "System", "System.Collections.Generic").OrderBy(s => s))
+			{
+				sb.AppendLine("	using " + reference + ";");
+			}
+			sb.AppendLine("");
+			sb.AppendLine("	public class " + doubleDescription.Name + " : Mock<" + doubleDescription.BaseName + ">, " + doubleDescription.BaseName);
+			sb.AppendLine("	{");
+			sb.AppendLine("		private readonly CountCallers countCallers;");
+			sb.AppendLine("		private readonly CountCalls countCalls;");
+			sb.AppendLine("		private readonly Handlers handlers;");
+			sb.AppendLine("		private readonly Verifications verifications;");
+			sb.AppendLine("		private readonly Verifiers verifiers;");
+			sb.AppendLine("");
+			sb.AppendLine("		public " + doubleDescription.ConstructorName + "()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			this.countCallers = new CountCallers(this);");
+			sb.AppendLine("			this.countCalls = new CountCalls(this);");
+			sb.AppendLine("			this.handlers = new Handlers(this);");
+			sb.AppendLine("			this.verifications = new Verifications(this);");
+			sb.AppendLine("			this.verifiers = new Verifiers(this);");
+			sb.AppendLine("		}");
+			sb.AppendLine("");
+			sb.Append(CreateProperties(doubleDescription.Properties));
+			sb.Append(CreateEvents(doubleDescription.Events));
+			sb.Append(CreateMethods(doubleDescription.Methods));
+			sb.AppendLine("		public CountCallers HasBeenCalled()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.countCallers;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public CountCalls GetCalls()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.countCalls;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public Handlers AddHandlers()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.handlers;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public Verifications AddVerifications()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.verifications;");
+			sb.AppendLine("		}");
+			sb.AppendLine("		public Verifiers Verify()");
+			sb.AppendLine("		{");
+			sb.AppendLine("			return this.verifiers;");
+			sb.AppendLine("		}");
+			sb.Append(CreateCountCallers(doubleDescription));
+			sb.Append(CreateCountCalls(doubleDescription));
+			sb.Append(CreateHandlers(doubleDescription));
+			sb.Append(CreateVerifications(doubleDescription));
+			sb.Append(CreateVerifiers(doubleDescription));
+			sb.AppendLine("	}");
+			sb.AppendLine("}");
+			
+			return sb.ToString();
+		}
+
+		private static string CreateProperties(List<TestDoublePropertyDescription> properties)
+		{
+			var sb = new StringBuilder();
+			foreach(var property in properties)
+			{
+				sb.AppendLine("		public " + property.TypeName + " " + property.Name);
+				sb.AppendLine("		{");
+				if (property.HasGetter)
+				{
+					sb.AppendLine("			get { " + property.TypeName + " result; this.InvokeGetProperty(\"" + property.Name + "\", out result); return result; }");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("			set { this.InvokeSetProperty(\"" + property.Name + "\", value); }");
+				}
+				sb.AppendLine("		}");
+			}
+
+			return sb.ToString();
+		}
+
+		private static string CreateMethods(List<TestDoubleMethodDescription> functions)
+		{
+			var sb = new StringBuilder();
+			foreach(var function in functions)
+			{
+				sb.AppendLine("		public " + function.TypeName + " " + function.Name + "(" + function.ArgumentsString + ")");
+				sb.AppendLine("		{");
+				if (function.TypeName == "void")
+				{
+					sb.AppendLine("			this.InvokeMember(\"" + function.Name + "\", new object[] { " + function.ArgumentsListString + " });");
+				}
+				else
+				{
+					sb.AppendLine("			" + function.TypeName + " result;");
+					sb.AppendLine("			this.InvokeMember(\"" + function.Name + "\", new object[] { " + function.ArgumentsListString + " }, out result);");
+					sb.AppendLine("			return result;");
+				}
+				sb.AppendLine("		}");
+			}
+
+			return sb.ToString();
+		}
+
+		private static string CreateEvents(List<TestDoubleMethodDescription> events)
+		{
+			var sb = new StringBuilder();
+			foreach(var @event in events)
+			{
+				var handlersName = @event.Name + "Handlers";
+				sb.AppendLine("		public List<" + @event.TypeName + "> " + handlersName + " { get; private set; }");
+				sb.AppendLine("		public event " + @event.TypeName + " " + @event.Name);
+				sb.AppendLine("		{");
+				sb.AppendLine("			add { if (this." + handlersName + " == null) this." + handlersName + " = new List<" + @event.TypeName + ">(); this." + handlersName + ".Add(value); }");
+				sb.AppendLine("			remove { if (this." + handlersName + " != null) this." + handlersName + ".Remove(value); }");
+				sb.AppendLine("		}");
+			}
+
+			return sb.ToString();
+		}
+
+		private static string CreateCountCallers(TestDoubleDescription doubleDescription)
+		{
+			var sb = new StringBuilder();
+			sb.AppendLine("		public class CountCallers");
+			sb.AppendLine("		{");
+			sb.AppendLine("			private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("			internal CountCallers(" + doubleDescription.Name + " parent)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				this.parent = parent;");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallerMethods Once()");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallerMethods(this.parent, 1);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallerMethods Twice()");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallerMethods(this.parent, 2);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallerMethods Thrice()");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallerMethods(this.parent, 3);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallerMethods Times(int times)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallerMethods(this.parent, times);");
+			sb.AppendLine("			}");
+			foreach(var property in doubleDescription.Properties)
+			{
+				if (property.HasGetter)
+				{
+					sb.AppendLine("			public CountCallers " + property.Name + "Getter()");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.CalledGet(\"" + property.Name + "\");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("			public CountCallers " + property.Name + "Setter()");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.CalledSet(\"" + property.Name + "\");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+					sb.AppendLine("			public CountCallers " + property.Name + "Setter(" + property.TypeName + " value)");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.CalledSetWith(\"" + property.Name + "\", value);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			var alreadyAdded = new List<string>();
+			foreach(var function in doubleDescription.Methods)
+			{
+				if (alreadyAdded.Contains(function.Name)) continue;
+				
+				alreadyAdded.Add(function.Name);
+				if (function.ArgumentsTypeListString != "")
+				{
+					sb.AppendLine("			public CountCallers " + function.Name + "(" + function.ArgumentsString + ")");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.CalledWith(\"" + function.Name + "\", " + function.ArgumentsListString + ");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+
+				sb.AppendLine("			public CountCallers " + function.Name + "()");
+				sb.AppendLine("			{");
+				sb.AppendLine("				this.parent.Called(\"" + function.Name + "\");");
+				sb.AppendLine("				return this;");
+				sb.AppendLine("			}");
+			}
+			sb.AppendLine("			public class CountCallerMethods");
+			sb.AppendLine("			{");
+			sb.AppendLine("				private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("				private readonly int count;");
+			sb.AppendLine("				internal CountCallerMethods(" + doubleDescription.Name + " parent, int count)");
+			sb.AppendLine("				{");
+			sb.AppendLine("					this.parent = parent;");
+			sb.AppendLine("					this.count = count;");
+			sb.AppendLine("				}");
+			foreach(var property in doubleDescription.Properties)
+			{
+				if (property.HasGetter)
+				{
+					sb.AppendLine("				public CountCallerMethods " + property.Name + "Getter()");
+					sb.AppendLine("				{");
+					sb.AppendLine("					this.parent.CalledGet(this.count, \"" + property.Name + "\");");
+					sb.AppendLine("					return this;");
+					sb.AppendLine("				}");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("				public CountCallerMethods " + property.Name + "Setter()");
+					sb.AppendLine("				{");
+					sb.AppendLine("					this.parent.CalledSet(this.count, \"" + property.Name + "\");");
+					sb.AppendLine("					return this;");
+					sb.AppendLine("				}");
+					sb.AppendLine("				public CountCallerMethods " + property.Name + "Setter(" + property.TypeName + " value)");
+					sb.AppendLine("				{");
+					sb.AppendLine("					this.parent.CalledSetWith(this.count, \"" + property.Name + "\", value);");
+					sb.AppendLine("					return this;");
+					sb.AppendLine("				}");
+				}
+			}
+			alreadyAdded.Clear();
+			foreach(var function in doubleDescription.Methods)
+			{
+				if (function.ArgumentsTypeListString != "")
+				{
+					sb.AppendLine("				public CountCallerMethods " + function.Name + "(" + function.ArgumentsString + ")");
+					sb.AppendLine("				{");
+					sb.AppendLine("					this.parent.CalledWith(this.count, \"" + function.Name + "\", " + function.ArgumentsListString + ");");
+					sb.AppendLine("					return this;");
+					sb.AppendLine("				}");
+				}
+
+				if (alreadyAdded.Contains(function.Name)) continue;
+				alreadyAdded.Add(function.Name);
+
+				sb.AppendLine("				public CountCallerMethods " + function.Name + "()");
+				sb.AppendLine("				{");
+				sb.AppendLine("					this.parent.Called(this.count, \"" + function.Name + "\");");
+				sb.AppendLine("					return this;");
+				sb.AppendLine("				}");
+			}
+			sb.AppendLine("			}");
+			sb.AppendLine("		}");
+
+			return sb.ToString();
+		}
+
+		private static string CreateCountCalls(TestDoubleDescription doubleDescription)
+		{
+			var sb = new StringBuilder();
+			sb.AppendLine("		public class CountCalls");
+			sb.AppendLine("		{");
+			sb.AppendLine("			private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("			internal CountCalls(" + doubleDescription.Name + " parent)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				this.parent = parent;");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallsMethods First()");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallsMethods(this.parent, 0);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallsMethods Second()");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallsMethods(this.parent, 1);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallsMethods Third()");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallsMethods(this.parent, 2);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public CountCallsMethods At(int position)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				return new CountCallsMethods(this.parent, position);");
+			sb.AppendLine("			}");
+			sb.AppendLine("			public class CountCallsMethods");
+			sb.AppendLine("			{");
+			sb.AppendLine("				private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("				private readonly int position;");
+			sb.AppendLine("				internal CountCallsMethods(" + doubleDescription.Name + " parent, int position)");
+			sb.AppendLine("				{");
+			sb.AppendLine("					this.parent = parent;");
+			sb.AppendLine("					this.position = position;");
+			sb.AppendLine("				}");
+			foreach(var property in doubleDescription.Properties)
+			{
+				if (property.HasGetter)
+				{
+					sb.AppendLine("				public MemberInvocation " + property.Name + "Getter()");
+					sb.AppendLine("				{");
+					sb.AppendLine("					return this.parent.GetCall(this.position, \"" + property.Name + "\");");
+					sb.AppendLine("				}");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("				public MemberInvocation " + property.Name + "Setter()");
+					sb.AppendLine("				{");
+					sb.AppendLine("					return this.parent.GetCall(this.position, \"" + property.Name + "\");");
+					sb.AppendLine("				}");
+				}
+			}
+
+			var alreadyAdded = new List<string>();
+			foreach(var function in doubleDescription.Methods)
+			{
+				if (alreadyAdded.Contains(function.Name)) continue;
+				
+				alreadyAdded.Add(function.Name);
+				sb.AppendLine("				public MemberInvocation " + function.Name + "()");
+				sb.AppendLine("				{");
+				sb.AppendLine("					return this.parent.GetCall(this.position, \"" + function.Name + "\");");
+				sb.AppendLine("				}");
+			}
+			sb.AppendLine("			}");
+			sb.AppendLine("		}");
+			
+			return sb.ToString();
+		}
+
+		private static string CreateHandlers(TestDoubleDescription doubleDescription)
+		{
+			var sb = new StringBuilder();
+			sb.AppendLine("		public class Handlers");
+			sb.AppendLine("		{");
+			sb.AppendLine("			private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("			internal Handlers(" + doubleDescription.Name + " parent)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				this.parent = parent;");
+			sb.AppendLine("			}");
+			foreach(var property in doubleDescription.Properties)
+			{
+				if (property.HasGetter)
+				{
+					sb.AppendLine("			public Handlers " + property.Name + "(Func<" + property.TypeName + "> action)");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.HandleGet(\"" + property.Name + "\", action);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("			public Handlers " + property.Name + "(Action<" + property.TypeName + "> action)");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.HandleSet(\"" + property.Name + "\", action);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			foreach(var function in doubleDescription.Methods)
+			{
+				if (function.TypeName == "void")
+				{
+					if (function.ArgumentsTypeListString != "")
+					{
+						sb.AppendLine("			public Handlers " + function.Name + "(Action<" + function.ArgumentsTypeListString + "> action)");
+						sb.AppendLine("			{");
+						sb.AppendLine("				this.parent.Handle<" + function.ArgumentsTypeListString + ">(\"" + function.Name + "\", action);");
+						sb.AppendLine("				return this;");
+						sb.AppendLine("			}");
+					}
+					else
+					{
+						sb.AppendLine("			public Handlers " + function.Name + "(Action action)");
+						sb.AppendLine("			{");
+						sb.AppendLine("				this.parent.Handle(\"" + function.Name + "\", action);");
+						sb.AppendLine("				return this;");
+						sb.AppendLine("			}");
+					}
+				}
+				else
+				{
+					var args = function.ArgumentsTypeListString;
+					if (args != "") args += ", ";
+					args += function.TypeName;
+					sb.AppendLine("			public Handlers " + function.Name + "(Func<" + args + "> action)");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.Handle<" + args + ">(\"" + function.Name + "\", action);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			sb.AppendLine("		}");
+			
+			return sb.ToString();
+		}
+
+		private static string CreateVerifications(TestDoubleDescription doubleDescription)
+		{
+			var sb = new StringBuilder();
+			sb.AppendLine("		public class Verifications");
+			sb.AppendLine("		{");
+			sb.AppendLine("			private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("			internal Verifications(" + doubleDescription.Name + " parent)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				this.parent = parent;");
+			sb.AppendLine("			}");
+			foreach(var property in doubleDescription.Properties)
+			{
+				if (property.HasGetter)
+				{
+					sb.AppendLine("			public Verifications " + property.Name + "()");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.AddGetVerification(\"" + property.Name + "\");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("			public Verifications " + property.Name + "(" + property.TypeName + " value)");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.AddSetVerification(\"" + property.Name + "\", value);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			foreach(var function in doubleDescription.Methods)
+			{
+				if (function.ArgumentsTypeListString != "")
+				{
+					sb.AppendLine("			public Verifications " + function.Name + "(" + function.ArgumentsString + ")");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.AddVerification(\"" + function.Name + "\", " + function.ArgumentsListString + ");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+				else
+				{
+					sb.AppendLine("			public Verifications " + function.Name + "()");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.AddVerification(\"" + function.Name + "\", new object[0]);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			sb.AppendLine("		}");
+			
+			return sb.ToString();
+		}
+
+		private static string CreateVerifiers(TestDoubleDescription doubleDescription)
+		{
+			var sb = new StringBuilder();
+			sb.AppendLine("		public class Verifiers");
+			sb.AppendLine("		{");
+			sb.AppendLine("			private readonly " + doubleDescription.Name + " parent;");
+			sb.AppendLine("			internal Verifiers(" + doubleDescription.Name + " parent)");
+			sb.AppendLine("			{");
+			sb.AppendLine("				this.parent = parent;");
+			sb.AppendLine("			}");
+			foreach(var property in doubleDescription.Properties)
+			{
+				if (property.HasGetter)
+				{
+					sb.AppendLine("			public Verifiers " + property.Name + "()");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.VerifyGet(\"" + property.Name + "\");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+				if (property.HasSetter)
+				{
+					sb.AppendLine("			public Verifiers " + property.Name + "(" + property.TypeName + " value)");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.VerifySet(\"" + property.Name + "\", value);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			foreach(var function in doubleDescription.Methods)
+			{
+				if (function.ArgumentsTypeListString != "")
+				{
+					sb.AppendLine("			public Verifiers " + function.Name + "(" + function.ArgumentsString + ")");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.Verify(\"" + function.Name + "\", " + function.ArgumentsListString + ");");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+				else
+				{
+					sb.AppendLine("			public Verifiers " + function.Name + "()");
+					sb.AppendLine("			{");
+					sb.AppendLine("				this.parent.Verify(\"" + function.Name + "\", new object[0]);");
+					sb.AppendLine("				return this;");
+					sb.AppendLine("			}");
+				}
+			}
+			sb.AppendLine("		}");
+			
+			return sb.ToString();
+		}
+	}
+#>
